@@ -30,10 +30,13 @@
 
 static char *asgeojson_point(const LWPOINT *point, char *srs, GBOX *bbox, int precision);
 static char *asgeojson_line(const LWLINE *line, char *srs, GBOX *bbox, int precision);
+static char *asgeojson_triangle(const LWTRIANGLE *triangle, char *srs, GBOX *bbox, int precision);
 static char *asgeojson_poly(const LWPOLY *poly, char *srs, GBOX *bbox, int precision);
 static char * asgeojson_multipoint(const LWMPOINT *mpoint, char *srs, GBOX *bbox, int precision);
 static char * asgeojson_multiline(const LWMLINE *mline, char *srs, GBOX *bbox, int precision);
 static char * asgeojson_multipolygon(const LWMPOLY *mpoly, char *srs, GBOX *bbox, int precision);
+static char * asgeojson_polyhedralsurface(const LWPSURFACE *ps, char *srs, GBOX *bbox, int precision);
+static char * asgeojson_tin(const LWTIN *tin, char *srs, GBOX *bbox, int precision);
 static char * asgeojson_collection(const LWCOLLECTION *col, char *srs, GBOX *bbox, int precision);
 static size_t asgeojson_geom_size(const LWGEOM *geom, GBOX *bbox, int precision);
 static size_t asgeojson_geom_buf(const LWGEOM *geom, char *output, GBOX *bbox, int precision);
@@ -69,12 +72,18 @@ lwgeom_to_geojson(const LWGEOM *geom, char *srs, int precision, int has_bbox)
 		return asgeojson_line((LWLINE*)geom, srs, bbox, precision);
 	case POLYGONTYPE:
 		return asgeojson_poly((LWPOLY*)geom, srs, bbox, precision);
+	case TRIANGLETYPE:
+		return asgeojson_triangle((LWTRIANGLE*)geom, srs, bbox, precision);
 	case MULTIPOINTTYPE:
 		return asgeojson_multipoint((LWMPOINT*)geom, srs, bbox, precision);
 	case MULTILINETYPE:
 		return asgeojson_multiline((LWMLINE*)geom, srs, bbox, precision);
 	case MULTIPOLYGONTYPE:
 		return asgeojson_multipolygon((LWMPOLY*)geom, srs, bbox, precision);
+	case POLYHEDRALSURFACETYPE:
+		return asgeojson_polyhedralsurface((LWPSURFACE*)geom, srs, bbox, precision);
+	case TINTYPE:
+		return asgeojson_tin((LWTIN*)geom, srs, bbox, precision);
 	case COLLECTIONTYPE:
 		return asgeojson_collection((LWCOLLECTION*)geom, srs, bbox, precision);
 	default:
@@ -257,6 +266,53 @@ asgeojson_line(const LWLINE *line, char *srs, GBOX *bbox, int precision)
 	return output;
 }
 
+
+/**
+ * Triangle Geometry
+ */
+
+static size_t
+asgeojson_triangle_size(const LWTRIANGLE *triangle, char *srs, GBOX *bbox, int precision)
+{
+	size_t size;
+
+	size = sizeof("{\"type\":\"Triangle\",");
+	if (srs) size += asgeojson_srs_size(srs);
+	if (bbox) size += asgeojson_bbox_size(FLAGS_GET_Z(triangle->flags), precision);
+	size += sizeof("\"coordinates\":[");
+	size += pointArray_geojson_size(triangle->points, precision);
+	size += sizeof("]}");
+
+	return size;
+}
+
+static size_t
+asgeojson_triangle_buf(const LWTRIANGLE *triangle, char *srs, char *output, GBOX *bbox, int precision)
+{
+	char *ptr=output;
+
+	ptr += sprintf(ptr, "{\"type\":\"Triangle\",");
+	if (srs) ptr += asgeojson_srs_buf(ptr, srs);
+	if (bbox) ptr += asgeojson_bbox_buf(ptr, bbox, FLAGS_GET_Z(triangle->flags), precision);
+	ptr += sprintf(ptr, "\"coordinates\":[");
+	ptr += pointArray_to_geojson(triangle->points, ptr, precision);
+	ptr += sprintf(ptr, "]}");
+
+	return (ptr-output);
+}
+
+static char *
+asgeojson_triangle(const LWTRIANGLE *triangle, char *srs, GBOX *bbox, int precision)
+{
+	char *output;
+	int size;
+
+	size = asgeojson_triangle_size(triangle, srs, bbox, precision);
+	output = lwalloc(size);
+	asgeojson_triangle_buf(triangle, srs, output, bbox, precision);
+
+	return output;
+}
 
 
 /**
@@ -528,6 +584,148 @@ asgeojson_multipolygon(const LWMPOLY *mpoly, char *srs, GBOX *bbox, int precisio
 	return output;
 }
 
+
+
+/**
+ * PolyhedralSurface Geometry
+ */
+
+static size_t
+asgeojson_polyhedralsurface_size(const LWPSURFACE *ps, char *srs, GBOX *bbox, int precision)
+{
+	LWPOLY *poly;
+	int size;
+	int i, j;
+
+	size = sizeof("{'type':'PolyhedralSurface',");
+	if (srs) size += asgeojson_srs_size(srs);
+	if (bbox) size += asgeojson_bbox_size(FLAGS_GET_Z(ps->flags), precision);
+	size += sizeof("'coordinates':[]}");
+
+	for (i=0; i < ps->ngeoms; i++)
+	{
+		poly = (LWPOLY *) ps->geoms[i];
+		for (j=0 ; j <poly->nrings ; j++)
+		{
+			size += pointArray_geojson_size(poly->rings[j], precision);
+			size += sizeof("[]");
+		}
+		size += sizeof("[]");
+	}
+	size += sizeof(",") * i;
+	size += sizeof("]}");
+
+	return size;
+}
+
+static size_t
+asgeojson_polyhedralsurface_buf(const LWPSURFACE *ps, char *srs, char *output, GBOX *bbox, int precision)
+{
+	LWPOLY *poly;
+	int i, j;
+	char *ptr=output;
+
+	ptr += sprintf(ptr, "{\"type\":\"PolyhedralSurface\",");
+	if (srs) ptr += asgeojson_srs_buf(ptr, srs);
+	if (bbox) ptr += asgeojson_bbox_buf(ptr, bbox, FLAGS_GET_Z(ps->flags), precision);
+	ptr += sprintf(ptr, "\"coordinates\":[");
+	for (i=0; i<ps->ngeoms; i++)
+	{
+		if (i) ptr += sprintf(ptr, ",");
+		ptr += sprintf(ptr, "[");
+		poly = (LWPOLY *) ps->geoms[i];
+		for (j=0 ; j < poly->nrings ; j++)
+		{
+			if (j) ptr += sprintf(ptr, ",");
+			ptr += sprintf(ptr, "[");
+			ptr += pointArray_to_geojson(poly->rings[j], ptr, precision);
+			ptr += sprintf(ptr, "]");
+		}
+		ptr += sprintf(ptr, "]");
+	}
+	ptr += sprintf(ptr, "]}");
+
+	return (ptr - output);
+}
+
+static char *
+asgeojson_polyhedralsurface(const LWPSURFACE *ps, char *srs, GBOX *bbox, int precision)
+{
+	char *output;
+	int size;
+
+	size = asgeojson_polyhedralsurface_size(ps, srs, bbox, precision);
+	output = lwalloc(size);
+	asgeojson_polyhedralsurface_buf(ps, srs, output, bbox, precision);
+
+	return output;
+}
+
+
+/**
+ * TIN Geometry
+ */
+
+static size_t
+asgeojson_tin_size(const LWTIN *tin, char *srs, GBOX *bbox, int precision)
+{
+	LWTRIANGLE *triangle;
+	int size;
+	int i;
+
+	size = sizeof("{'type':'Tin',");
+	if (srs) size += asgeojson_srs_size(srs);
+	if (bbox) size += asgeojson_bbox_size(FLAGS_GET_Z(tin->flags), precision);
+	size += sizeof("'coordinates':[]}");
+
+	for (i=0; i < tin->ngeoms; i++)
+	{
+		triangle = (LWTRIANGLE *) tin->geoms[i];
+		size += pointArray_geojson_size(triangle->points, precision);
+		size += sizeof("[]");
+	}
+	size += sizeof(",") * i;
+	size += sizeof("]}");
+
+	return size;
+}
+
+static size_t
+asgeojson_tin_buf(const LWTIN *tin, char *srs, char *output, GBOX *bbox, int precision)
+{
+	LWTRIANGLE *triangle;
+	int i;
+	char *ptr=output;
+
+	ptr += sprintf(ptr, "{\"type\":\"Tin\",");
+	if (srs) ptr += asgeojson_srs_buf(ptr, srs);
+	if (bbox) ptr += asgeojson_bbox_buf(ptr, bbox, FLAGS_GET_Z(tin->flags), precision);
+	ptr += sprintf(ptr, "\"coordinates\":[");
+	for (i=0; i<tin->ngeoms; i++)
+	{
+		if (i) ptr += sprintf(ptr, ",");
+		ptr += sprintf(ptr, "[");
+		triangle = (LWTRIANGLE *) tin->geoms[i];
+		ptr += pointArray_to_geojson(triangle->points, ptr, precision);
+		ptr += sprintf(ptr, "]");
+	}
+	ptr += sprintf(ptr, "]}");
+
+	return (ptr - output);
+}
+
+static char *
+asgeojson_tin(const LWTIN *tin, char *srs, GBOX *bbox, int precision)
+{
+	char *output;
+	int size;
+
+	size = asgeojson_tin_size(tin, srs, bbox, precision);
+	output = lwalloc(size);
+	asgeojson_tin_buf(tin, srs, output, bbox, precision);
+
+	return output;
+}
 
 
 /**
